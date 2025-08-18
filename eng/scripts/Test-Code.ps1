@@ -5,9 +5,11 @@
 param(
     [string] $TestResultsPath,
     [string[]] $Areas,
-    [switch] $Live,
-    [switch] $CoverageSummary,
-    [switch] $OpenReport
+    [ValidateSet('Live', 'Unit', 'All')]
+    [string] $TestType = 'Unit',
+    [switch] $CollectCoverage,
+    [switch] $OpenReport,
+    [switch] $TestNativeBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,98 +17,332 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = $RepoRoot.Path.Replace('\', '/')
 
+$debugLogs = $env:SYSTEM_DEBUG -eq 'true' -or $DebugPreference -eq 'Continue'
+
+$workPath = "$RepoRoot/.work/tests"
+Remove-Item -Recurse -Force $workPath -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $workPath -Force | Out-Null
+
 if (!$TestResultsPath) {
-    $TestResultsPath = "$RepoRoot/.work/testResults"
+    $TestResultsPath = "$workPath/testResults"
 }
 
 # Clean previous results
 Remove-Item -Recurse -Force $TestResultsPath -ErrorAction SilentlyContinue
 
-if($env:TF_BUILD) {
-    Move-Item -Path "$RepoRoot/tests/xunit.runner.ci.json" -Destination "$RepoRoot/tests/xunit.runner.json" -Force -ErrorAction Continue
-    Write-Host "Replaced xunit.runner.json with xunit.runner.ci.json"
-}
+function Get-Areas {
+    param(
+        [string[]]$areas
+    )
 
-Write-Host "xunit.runner.json content:"
-Get-Content "$RepoRoot/tests/xunit.runner.json" | Out-Host
-
-# Run tests with coverage
-$filter = $Live ? "Category~Live" : "Category!~Live"
-
-if ($Areas) {
-    $filter = "$filter & ($($Areas | ForEach-Object { "Area=$_" } | Join-String -Separator ' | '))"
-}
-
-Invoke-LoggedCommand ("dotnet test '$RepoRoot/tests/AzureMcp.Tests.csproj'" +
-  " --collect:'XPlat Code Coverage'" +
-  " --filter '$filter'" +
-  " --results-directory '$TestResultsPath'" +
-  " --logger 'trx'") -AllowedExitCodes @(0, 1)
-
-$testExitCode = $LastExitCode
-
-# Find the coverage file
-$coverageFile = Get-ChildItem -Path $TestResultsPath -Recurse -Filter "coverage.cobertura.xml"
-| Where-Object { $_.FullName.Replace('\','/') -notlike "*/in/*" }
-| Select-Object -First 1
-
-if (-not $coverageFile) {
-    Write-Error "No coverage file found!"
-    exit 1
-}
-
-# Coverage Report Generation
-
-if ($env:TF_BUILD) {
-    # Write the path to the cover file to a pipeline variable
-    Write-Host "##vso[task.setvariable variable=CoverageFile]$($coverageFile.FullName)"
-} else {
-    # Ensure reportgenerator tool is installed
-    if (-not (Get-Command reportgenerator -ErrorAction SilentlyContinue)) {
-        Write-Host "Installing reportgenerator tool..."
-        dotnet tool install -g dotnet-reportgenerator-globaltool
+    if ($areas) {
+        return $areas | ForEach-Object { $_.ToLower() }
     }
 
-    # Generate reports
-    Write-Host "Generating coverage reports..."
+    # Find all areas
+    $discoveredAreas = @('core')
+    $areasDir = "$RepoRoot/areas"
+    if (Test-Path $areasDir) {
+        Get-ChildItem -Path $areasDir -Directory | ForEach-Object {
+            $areaTestsPath = "$($_.FullName)/tests"
+            if (Test-Path $areaTestsPath) {
+                $discoveredAreas += $_.Name.ToLower()
+            }
+        }
+    }
+    return $discoveredAreas
+}
 
-    $reportDirectory = "$TestResultsPath/coverageReport"
-    Invoke-LoggedCommand ("reportgenerator" +
-    " -reports:'$coverageFile'" +
-    " -targetdir:'$reportDirectory'" +
-    " -reporttypes:'Html;HtmlSummary;Cobertura'" +
-    " -assemblyfilters:'+azmcp'" +
-    " -classfilters:'-*Tests*;-*Program'" +
-    " -filefilters:'-*JsonSourceGenerator*;-*LibraryImportGenerator*'")
+# Gets all area projects those are excluded using BuildNative condition.
+function Get-NativeExcludedAreas {
+    $areaPathPattern = 'areas[/\\]([^/\\]+)[/\\]src'
+    $ProjectFile = "$RepoRoot/core/src/AzureMcp.Cli/AzureMcp.Cli.csproj"
 
-    Write-Host "Coverage report generated at $reportDirectory/index.html"
-
-    # Open the report in default browser
-    $reportPath = "$reportDirectory/index.html"
-    if (-not (Test-Path $reportPath)) {
-        Write-Error "Could not find coverage report at $reportPath"
+    if (!(Test-Path $ProjectFile)) {
+        Write-Error "$ProjectFile not found"
         exit 1
     }
 
-    if ($OpenReport) {
-        # Open the report in default browser
-        Write-Host "Opening coverage report in browser..."
-        if ($IsMacOS) {
-            # On macOS, use 'open' command
-            Start-Process "open" -ArgumentList $reportPath
-        } elseif ($IsLinux) {
-            # On Linux, use 'xdg-open'
-            Start-Process "xdg-open" -ArgumentList $reportPath
-        } else {
-            # On Windows, use 'Start-Process'
-            Start-Process $reportPath
+    [xml]$xml = Get-Content $ProjectFile
+    $buildNativeGroup = $xml.Project.ItemGroup | Where-Object { $_.Condition -eq "'`$(BuildNative)' == 'true'" }
+
+    if (!$buildNativeGroup) {
+        Write-Warning "No ItemGroup with BuildNative condition found"
+        return @()
+    }
+
+    $excludedAreas = @()
+    foreach ($ref in $buildNativeGroup.ProjectReference) {
+        if ($ref.Remove -match $areaPathPattern) {
+            $excludedAreas += $matches[1].ToLower()
         }
+    }
+
+    return $excludedAreas
+}
+
+
+# Identifies the root directories to be recursively scanned for tests in the specified areas.
+function GetTestsRootDirs {
+    param(
+        [string[]]$areas
+    )
+
+    $testsRootDirs = @()
+    foreach ($area in $areas) {
+        $testsPath = $area -eq 'core' ? "$RepoRoot/core/tests" : "$RepoRoot/areas/$area/tests"
+        if (Test-Path $testsPath) {
+            $testsRootDirs += $testsPath
+        } else {
+            Write-Error "Tests path '$testsPath' does not exist."
+            return $null
+        }
+    }
+    return $testsRootDirs
+}
+
+function BuildNativeBinaryAndPrepareTests {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]]$testsRootDirs
+    )
+
+    # Native AOT compilation only occurs during 'dotnet publish', not 'dotnet build'
+    $nativeBinaryPath = PublishNativeBinary
+
+    Write-Host "Building test project(s)"
+    Invoke-LoggedCommand `
+        -Command "dotnet build" `
+        -AllowedExitCodes @(0)
+
+    CopyNativeBinaryToTestDirs -nativeBinaryPath $nativeBinaryPath -testsRootDirs $testsRootDirs
+}
+
+function PublishNativeBinary {
+    $runtimeId = [System.Runtime.InteropServices.RuntimeInformation]::RuntimeIdentifier
+    Write-Host "Publishing AzureMcp as native binary for $runtimeId"
+
+    $cliProjectDir = "$RepoRoot/core/src/AzureMcp.Cli"
+
+    Invoke-LoggedCommand `
+        -Command "dotnet publish '$cliProjectDir/AzureMcp.Cli.csproj' -c Release -r $runtimeId /p:BuildNative=true" `
+        -AllowedExitCodes @(0) | Out-Null
+
+    $exeName = if ($runtimeId.StartsWith('win-')) { "azmcp.exe" } else { "azmcp" }
+    $nativeExePath = "$cliProjectDir/bin/Release/net9.0/$runtimeId/publish/$exeName"
+
+    if (-not (Test-Path $nativeExePath)) {
+        Write-Error "Native binary not found at $nativeExePath"
+        exit 1
+    }
+
+    return $nativeExePath
+}
+
+function CopyNativeBinaryToTestDirs {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$nativeBinaryPath,
+        [string[]]$testsRootDirs
+    )
+    Write-Host "Copying native AzureMcp to test directories"
+
+    $testsRootDirs | ForEach-Object {
+        Get-ChildItem -Path $_ -Recurse -Filter "*.LiveTests" -Directory
+    } | ForEach-Object {
+        $targetDirectory = "$($_.FullName)/bin/Debug/net9.0"
+        Copy-Item $nativeBinaryPath $targetDirectory -Force
     }
 }
 
-# Command Coverage Summary
+function CreateTestSolution {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$workPath,
+        [Parameter(Mandatory=$true)]
+        [string[]]$testsRootDirs,
+        [Parameter(Mandatory=$true)]
+        [string]$testType
+    )
 
-if($CoverageSummary) {
+    $testPatterns = switch ($testType) {
+        'Live' { @('*.LiveTests.csproj') }
+        'Unit' { @('*.UnitTests.csproj') }
+        'All'  { @('*.LiveTests.csproj', '*.UnitTests.csproj') }
+        default {
+            Write-Error "Invalid test type specified: '$testType'. Valid options are 'Live', 'Unit', or 'All'."
+            return $null
+        }
+    }
+
+    $testProjects = @($testsRootDirs | ForEach-Object {
+        $testsRootDir = $_
+        $testPatterns | ForEach-Object {
+            Get-ChildItem $testsRootDir -Recurse -File -Filter $_
+        }
+    })
+
+    if($testProjects.Count -eq 0) {
+        Write-Error "No test projects found in the specified areas for test type '$testType'."
+        return $null
+    }
+
+    # Create solution and add projects
+    Write-Host "Creating temporary solution file..."
+
+    Push-Location $workPath
+    try {
+        dotnet new sln -n "Tests" | Out-Null
+        dotnet sln add $testProjects --in-root | Out-Null
+    }
+    finally {
+        Pop-Location
+    }
+
+    return "$workPath/Tests.sln"
+}
+
+# main
+
+$areas = Get-Areas -areas $Areas
+
+if ($TestNativeBuild) {
+    $excludedAreas = Get-NativeExcludedAreas
+    $nonNativeAreas = @($areas | Where-Object { $_ -in $excludedAreas })
+    $areas = @($areas | Where-Object { $_ -notin $excludedAreas })
+    
+    if ($areas.Count -eq 0) {
+        Write-Warning "All the specified area(s) [$($nonNativeAreas -join ', ')] are native incompatible, specify areas that support native builds or run without -TestNativeBuild."
+        exit 0
+    }
+    
+    if ($nonNativeAreas.Count -gt 0) {
+        Write-Warning "The following native incompatible areas will be excluded from native tests:"
+        Write-Warning "  $($nonNativeAreas -join ', ')"
+    }
+}
+
+$testsRootDirs = GetTestsRootDirs -areas $areas
+
+if (!$testsRootDirs) {
+    exit 1
+}
+
+$solutionPath = CreateTestSolution -workPath $workPath -testsRootDirs $testsRootDirs -testType $TestType
+
+if (!$solutionPath) {
+    exit 1
+}
+
+Push-Location $workPath
+try {
+    if ($TestNativeBuild) {
+        BuildNativeBinaryAndPrepareTests -testsRootDirs $testsRootDirs
+    }
+
+    if($debugLogs) {
+        Write-Host "`n`n"
+        # dump all environment variables
+        Write-Host "Current environment variables:" -ForegroundColor Yellow
+        Get-ChildItem Env: | Sort-Object Name | ForEach-Object { "$($_.Name)= $($_.Value)" } | Out-Host
+
+        # dump az powershell context
+        Write-Host "`nCurrent Azure PowerShell context (Get-AzContext):" -ForegroundColor Yellow
+        try {
+            Get-AzContext | ConvertTo-Json | Out-Host
+        } catch {
+            Write-Host "Error retrieving Azure PowerShell context: $($_.Exception.Message)" -ForegroundColor Red
+        }
+
+        # dump az cli context
+        Write-Host "`nCurrent Azure CLI context (az account show):" -ForegroundColor Yellow
+        try {
+            az account show | ConvertTo-Json | Out-Host
+        } catch {
+            Write-Host "Error retrieving Azure CLI context: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        Write-Host "`n`n"
+    }
+
+    $coverageArg = $CollectCoverage ? "--collect:'XPlat Code Coverage'" : ""
+    $resultsArg = "--results-directory '$TestResultsPath'"
+    $loggerArg = "--logger 'trx'"
+
+    $command = "dotnet test $coverageArg $resultsArg $loggerArg"
+    if ($TestNativeBuild) {
+        $command += " --no-build"
+    }
+
+    Invoke-LoggedCommand `
+        -Command $command `
+        -AllowedExitCodes @(0, 1)
+}
+finally {
+    Pop-Location
+}
+
+$testExitCode = $LastExitCode
+
+# Coverage Report Generation - only if coverage collection was enabled
+if ($CollectCoverage) {
+    # Find the coverage file
+    $coverageFile = Get-ChildItem -Path $TestResultsPath -Recurse -Filter "coverage.cobertura.xml"
+    | Where-Object { $_.FullName.Replace('\','/') -notlike "*/in/*" }
+    | Select-Object -First 1
+
+    if (-not $coverageFile) {
+        Write-Error "No coverage file found!"
+        exit 1
+    }
+
+    if ($env:TF_BUILD) {
+        # Write the path to the cover file to a pipeline variable
+        Write-Host "##vso[task.setvariable variable=CoverageFile]$($coverageFile.FullName)"
+    } else {
+        # Ensure reportgenerator tool is installed
+        if (-not (Get-Command reportgenerator -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing reportgenerator tool..."
+            dotnet tool install -g dotnet-reportgenerator-globaltool
+        }
+
+        # Generate reports
+        Write-Host "Generating coverage reports..."
+
+        $reportDirectory = "$TestResultsPath/coverageReport"
+        Invoke-LoggedCommand ("reportgenerator" +
+        " -reports:'$coverageFile'" +
+        " -targetdir:'$reportDirectory'" +
+        " -reporttypes:'Html;HtmlSummary;Cobertura'" +
+        " -assemblyfilters:'+azmcp'" +
+        " -classfilters:'-*Tests*;-*Program'" +
+        " -filefilters:'-*JsonSourceGenerator*;-*LibraryImportGenerator*'")
+
+        Write-Host "Coverage report generated at $reportDirectory/index.html"
+
+        # Open the report in default browser
+        $reportPath = "$reportDirectory/index.html"
+        if (-not (Test-Path $reportPath)) {
+            Write-Error "Could not find coverage report at $reportPath"
+            exit 1
+        }
+
+        if ($OpenReport) {
+            # Open the report in default browser
+            Write-Host "Opening coverage report in browser..."
+            if ($IsMacOS) {
+                # On macOS, use 'open' command
+                Start-Process "open" -ArgumentList $reportPath
+            } elseif ($IsLinux) {
+                # On Linux, use 'xdg-open'
+                Start-Process "xdg-open" -ArgumentList $reportPath
+            } else {
+                # On Windows, use 'Start-Process'
+                Start-Process $reportPath
+            }
+        }
+    }
+
+    # Command Coverage Summary
     try{
         $CommandCoverageSummaryFile = "$TestResultsPath/Coverage.md"
 
@@ -178,4 +414,5 @@ if($CoverageSummary) {
         exit 1
     }
 }
+
 exit $testExitCode

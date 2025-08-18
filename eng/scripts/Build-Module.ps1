@@ -9,6 +9,8 @@ param(
     [switch] $ReadyToRun,
     [switch] $Trimmed,
     [switch] $DebugBuild,
+    [switch] $CleanBuild,
+    [switch] $BuildNative,
     [Parameter(Mandatory=$true, ParameterSetName='Named')]
     [ValidateSet('windows','linux','macOS')]
     [string] $OperatingSystem,
@@ -17,11 +19,14 @@ param(
     [string] $Architecture
 )
 
+$ErrorActionPreference = 'Stop'
+
 . "$PSScriptRoot/../common/scripts/common.ps1"
 $RepoRoot = $RepoRoot.Path.Replace('\', '/')
 
 $npmPackagePath = "$RepoRoot/eng/npm/platform"
-$projectFile = "$RepoRoot/src/AzureMcp.csproj"
+$projectDir = "$RepoRoot/core/src/AzureMcp.Cli"
+$projectFile = "$projectDir/AzureMcp.Cli.csproj"
 
 if(!$Version) {
     $Version = & "$PSScriptRoot/Get-Version.ps1"
@@ -55,17 +60,23 @@ try {
     } else {
         $arch = $parts[1]
     }
-    
+
     switch($os) {
         'win' { $node_os = 'win32'; $extension = '.exe' }
         'osx' { $node_os = 'darwin'; $extension = '' }
         default { $node_os = $os; $extension = '' }
     }
 
-
     $outputDir = "$OutputPath/$os-$arch"
     Write-Host "Building version $Version, $os-$arch in $outputDir" -ForegroundColor Green
-    
+
+    $configuration = if ($DebugBuild) { 'Debug' } else { 'Release' }
+
+    if ($CleanBuild) {
+        # Clean up any previous azmcp build artifacts.
+        Invoke-LoggedCommand "dotnet clean '$projectFile' --configuration $configuration" -GroupOutput
+    }
+
     # Clear and recreate the package output directory
     Remove-Item -Path $outputDir -Recurse -Force -ErrorAction SilentlyContinue -ProgressAction SilentlyContinue
     New-Item -Path "$outputDir/dist" -ItemType Directory -Force | Out-Null
@@ -73,9 +84,8 @@ try {
     # Copy the platform package files to the output directory
     Copy-Item -Path "$npmPackagePath/*" -Recurse -Destination $outputDir -Force
 
-    $configuration = if ($DebugBuild) { 'Debug' } else { 'Release' }
     $command = "dotnet publish '$projectFile' --runtime '$os-$arch' --output '$outputDir/dist' /p:Version=$Version /p:Configuration=$configuration"
-    
+
     if($SelfContained) {
         $command += " --self-contained"
     }
@@ -86,6 +96,10 @@ try {
 
     if($Trimmed) {
         $command += " /p:PublishTrimmed=true"
+    }
+
+    if($BuildNative) {
+        $command += " /p:BuildNative=true"
     }
 
     Invoke-LoggedCommand $command -GroupOutput

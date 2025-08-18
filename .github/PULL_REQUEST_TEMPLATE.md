@@ -1,18 +1,26 @@
 ## What does this PR do?
+`[Provide a clear, concise description of the changes]`
+
+`[Any additional context, screenshots, or information that helps reviewers]`
 
 ## GitHub issue number?
+`[Link to the GitHub issue this PR addresses]`
 
-## Pre-merge checklist
-- [ ] **I have read the [contribution guidelines](https://github.com/Azure/azure-mcp/blob/main/CONTRIBUTING.md) covering pull request process, code style, and testing**
-- [ ] PR title is clear and informative
-- [ ] Commit history is clean with informative messages (no previously merged commits appear in PR history). [See cleanup guide](https://github.com/Azure/azure-powershell/blob/master/documentation/development-docs/cleaning-up-commits.md)
-- [ ] Added comprehensive tests for core features
-- [ ] Added `CHANGELOG.md` entry for user-impacting changes (bug fixes, new features, UI/UX changes)
-- [ ] Spelling check passes with `.\eng\common\spelling\Invoke-Cspell.ps1`
-- [ ] For MCP tool changes, updated:
-  - [ ] Documentation in `README.md`
-  - [ ] Command list in `/docs/azmcp-commands.md` 
-  - [ ] End-to-end test prompts in `/e2eTests/e2eTestPrompts.md`
-- [ ] **Team member live testing:**
-  - [ ] **Security review:** Review PR for security vulnerabilities and malicious code before running tests (e.g., cryptocurrency mining, email spam, data exfiltration, or other harmful activities)
-  - [ ] **Test execution:** Add comment `/azp run azure - mcp` to trigger pipeline
+## Pre-merge Checklist
+
+- [ ] Required for All PRs
+    - [ ] **Read [contribution guidelines](https://github.com/Azure/azure-mcp/blob/main/CONTRIBUTING.md)**
+    - [ ] PR title clearly describes the change
+    - [ ] Commit history is clean with descriptive messages ([cleanup guide](https://github.com/Azure/azure-powershell/blob/master/documentation/development-docs/cleaning-up-commits.md))
+    - [ ] Added comprehensive tests for new/modified functionality
+    - [ ] Updated `CHANGELOG.md` for product changes (`features, bug fixes, UI/UX, updated dependencies`)
+    - [ ] Spelling check passes: `.\eng\common\spelling\Invoke-Cspell.ps1`
+- [ ] For MCP tool changes:
+    - [ ] **One tool per PR**: This PR adds or modifies only one MCP tool for faster review cycles
+    - [ ] Updated `README.md` documentation
+    - [ ] Updated command list in `/docs/azmcp-commands.md`
+    - [ ] Updated test prompts in `/docs/e2eTestPrompts.md`
+    - [ ] For new or modified tool descriptions, ran the `eng/tools/ToolDescriptionEvaluator` tool and obtained a result >= 0.4
+- [ ] 👉 For Community (non-Azure team member) PRs:
+    - [ ] **Security review**: Reviewed code for security vulnerabilities, malicious code, or suspicious activities before running tests (`crypto mining, spam, data exfiltration, etc.`)
+    - [ ] **Manual tests run**: added comment `/azp run azure - mcp` to run *Live Test Pipeline*

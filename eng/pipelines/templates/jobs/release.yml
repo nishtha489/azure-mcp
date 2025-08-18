@@ -1,3 +1,8 @@
+parameters:
+- name: VsixTargets
+  type: object
+  default: []
+
 jobs:
 - job: TagRepository
   displayName: "Create release tag"
@@ -12,10 +17,7 @@ jobs:
   - template: /eng/common/pipelines/templates/steps/retain-run.yml
 
   - pwsh: |
-      gh release create `
-        "$(Version)" `
-        --title "$(Version)"
-
+      gh release create $(Version) --title "$(Version)"
       gh release upload $(Version) $(Pipeline.Workspace)/$(PipelineArtifactName)_packed/platform/*.tgz
       gh release upload $(Version) $(Pipeline.Workspace)/$(PipelineArtifactName)_packed/wrapper/*.tgz
     displayName: Create GitHub Release and upload artifacts
@@ -82,6 +84,43 @@ jobs:
             PathToArtifacts: $(Pipeline.Workspace)/drop
             Registry: https://pkgs.dev.azure.com/azure-sdk/public/_packaging/azure-sdk-for-js/npm/registry/
             Tag: latest
+
+# Deployment Jobs: Publish VSIX artifacts to Marketplace for each vsix target
+- ${{ each VsixTarget in parameters.VsixTargets }}:
+  - deployment: PublishVSIX_${{ replace(VsixTarget, '-', '_') }}
+    displayName: "Publish VSIX Artifact to Marketplace - ${{ VsixTarget }}"
+    dependsOn: Publish
+    condition: and(succeeded(), ne(variables['Skip.PublishPackage'], 'true'))
+    templateContext:
+      type: releaseJob
+      isProduction: true
+      inputs:
+      - input: pipelineArtifact
+        artifactName: vsix_package_${{ VsixTarget }}_signed
+        targetPath: $(Pipeline.Workspace)/drop
+    environment: package-publish
+    pool:
+      name: azsdk-pool
+      image: ubuntu-24.04
+      os: linux
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureCLI@2
+            displayName: "Publish (using vsce) - ${{ VsixTarget }}"
+            inputs:
+              azureSubscription: azure-sdk-vsmarketplace
+              scriptType: pscore
+              scriptLocation: inlineScript
+              workingDirectory: $(Pipeline.Workspace)/drop
+              inlineScript: |
+                Write-Host "Publishing VSIX for ${{ VsixTarget }}"
+                $baseName = Get-ChildItem *.vsix | Select-Object -First 1 | ForEach-Object { $_.BaseName }
+                Write-Host "VSIX baseName: $baseName"
+                npm install -g @vscode/vsce
+                echo "vsce publish --azure-credential --packagePath ""$($baseName).vsix"" --manifestPath ""$($baseName).manifest"" --signaturePath ""$($baseName).signature.p7s"""
+                vsce publish --azure-credential --packagePath "$($baseName).vsix" --manifestPath "$($baseName).manifest" --signaturePath "$($baseName).signature.p7s"
 
 - job: UpdatePackageVersion
   displayName: "Update Package Versions"

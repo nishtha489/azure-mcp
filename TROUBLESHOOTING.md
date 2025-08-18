@@ -14,14 +14,17 @@ This guide helps you diagnose and resolve common issues with the Azure MCP Serve
 - [Authentication](#authentication)
   - [401 Unauthorized: Local authorization is disabled](#401-unauthorized-local-authorization-is-disabled)
   - [403 Forbidden: Authorization Failure](#403-forbidden-authorization-failure)
+  - [Primary Access Token from Wrong Issuer](#primary-access-token-from-wrong-issuer)
   - [Network and Firewall Restrictions](#network-and-firewall-restrictions)
   - [Enterprise Environment Scenarios](#enterprise-environment-scenarios)
   - [AADSTS500200 error: User account is a personal Microsoft account](#aadsts500200-error-user-account-is-a-personal-microsoft-account)
+  - [Platform Package Installation Issues](#platform-package-installation-issues)
 - [Logging and Diagnostics](#logging-and-diagnostics)
   - [Logging](#logging)
   - [Observability with OpenTelemetry](#observability-with-opentelemetry)
 - [Development Environment](#development-environment)
   - [Development in VS Code](#development-in-vs-code)
+  - [Locating MCP Server Binaries in VS Code](#locating-mcp-server-binaries-in-vs-code)
 
 ## Common Issues
 
@@ -38,7 +41,7 @@ Yes, you can enable multiple MCP servers that only load the services you need. I
   "servers": {
     "Azure Storage": {
       "type": "stdio",
-      "command": "<absolute-path-to>/azure-mcp/src/bin/Debug/net9.0/azmcp[.exe]",
+      "command": "<absolute-path-to>/azure-mcp/core/src/AzureMcp.Cli/bin/Debug/net9.0/azmcp[.exe]",
       "args": [
         "server",
         "start",
@@ -48,7 +51,7 @@ Yes, you can enable multiple MCP servers that only load the services you need. I
     },
     "Azure KeyVault": {
       "type": "stdio",
-      "command": "<absolute-path-to>/azure-mcp/src/bin/Debug/net9.0/azmcp[.exe]",
+      "command": "<absolute-path-to>/azure-mcp/core/src/AzureMcp.Cli/bin/Debug/net9.0/azmcp[.exe]",
       "args": [
         "server",
         "start",
@@ -68,6 +71,20 @@ The Azure MCP Server can run in multiple modes. Review your MCP configuration to
 - `azmcp server start --namespace <service-name>` - Launches an MCP server with tools for the specified service (e.g., `storage`, `keyvault`)
 - `azmcp server start --mode single` - Launches an MCP server with a single `azure` tool that performs internal dynamic proxy and tool selection
 - `azmcp server start --mode namespace` - Launches an MCP server with a tool registered for each Azure service/namespace.
+
+### VS Code Permission Dialog for Language Model Calls
+
+When using the Azure MCP Server in VS Code, you may see a permission dialog requesting authorization for the MCP server to make language model calls:
+
+![VS Code MCP Permission Dialog](https://github.com/user-attachments/assets/8fddb369-046b-46d1-84c2-b1dd4a1b4e6a)
+
+The dialog shows: "The MCP server 'Azure' has issued a request to make an language model call. Do you want to allow it to make requests during chat?"
+
+**To continue using the Azure MCP Server, you must click one of the following:**
+- **"Allow in this Session"** - Allows the server to make language model calls for the current VS Code session
+- **"Always"** - Permanently allows the server to make language model calls
+
+This permission is required because some Azure MCP tools may need to make additional language model calls to process complex requests or provide enhanced responses.
 
 ## Tool Limitations
 
@@ -216,6 +233,58 @@ This error indicates that the access token doesn't have sufficient permissions t
     ```
 
     This will prompt you to select your desired account for authentication.
+
+
+### Primary Access Token from Wrong Issuer
+
+When running Azure MCP Server in the **VS Code context**, you may encounter an authentication error like:
+
+```
+Authenticate: Bearer authorization_uri="https://login.windows.net/<Tenant>",
+error="invalid_token",
+error_description="The primary access token is from the wrong issuer.
+It must match the tenant associated with this subscription.
+Please use correct authority to get the token."
+```
+
+#### Why This Happens
+VS Code may default to a tenant different from the one associated with your Azure subscription. When the MCP Server requests a token, the issuer in that token must match the subscription's tenant. If they don't match, the request fails.
+
+#### Resolution
+Specify the preferred tenant in your **VS Code global `settings.json`** file.
+
+**Steps:**
+1. Determine your correct **Tenant ID**:
+   ```bash
+   az account show --query tenantId -o tsv
+   ```
+2. Add the following setting to the VS Code global settings file:
+
+   **Stable (GA) VS Code**
+   `~/AppData/Roaming/Code/User/settings.json` (Windows)
+   `~/Library/Application Support/Code/User/settings.json` (macOS)
+   `~/.config/Code/User/settings.json` (Linux)
+
+   **Insiders VS Code**
+   `~/AppData/Roaming/Code - Insiders/User/settings.json` (Windows)
+   `~/Library/Application Support/Code - Insiders/User/settings.json` (macOS)
+   `~/.config/Code - Insiders/User/settings.json` (Linux)
+
+   ```jsonc
+   "@azure.argTenant": "<Tenant-Id-of-the-preferred-tenant>"
+   ```
+
+3. Restart VS Code and the Azure MCP Server.
+
+**Example:**
+```json
+{
+  "@azure.argTenant": "11111111-2222-3333-4444-555555555555"
+}
+```
+
+This ensures tokens are requested for the correct authority, matching the subscription's tenant, and resolves the `invalid_token` issuer mismatch.
+
 
 ### Network and Firewall Restrictions
 
@@ -422,6 +491,62 @@ See the [Authentication guide](https://github.com/Azure/azure-mcp/blob/main/docs
 2. Complete the authentication setup as described in the [Authentication guide](https://github.com/Azure/azure-mcp/blob/main/docs/Authentication.md)
 3. Verify access by running `az account show` to confirm you're authenticated with the correct account type
 
+### Platform Package Installation Issues
+
+The Azure MCP wrapper automatically installs the correct platform-specific package when needed. However, if you encounter persistent errors about missing platform packages (e.g., `@azure/mcp-linux-x64`, `@azure/mcp-win32-x64`, `@azure/mcp-darwin-x64`), this may indicate network connectivity issues or permission problems.
+
+#### Error Examples:
+- `Failed to load platform specific package '@azure/mcp-linux-x64'`
+- `Cannot find module '@azure/mcp-linux-x64'`
+- `'@azure/mcp-linux-x64' module is missing`
+
+#### Resolution Steps:
+
+**First, ensure you have the latest VS Code version** (v1.101 or later), as older versions may cause compatibility issues with the Azure MCP Server on Ubuntu systems.
+
+**The wrapper will attempt automatic installation first.** If auto-installation fails, try these manual steps:
+
+1. **Clear npm cache and reinstall:**
+   ```bash
+   npm cache clean --force
+   npm uninstall -g @azure/mcp
+   npm install -g @azure/mcp@latest
+   ```
+
+2. **If using npx, clear the cache:**
+   ```bash
+   npx clear-npx-cache
+   npx -y @azure/mcp@latest server start
+   ```
+
+3. **Manually install the platform package:**
+   ```bash
+   npm install @azure/mcp-linux-x64@latest  # Linux x64
+   npm install @azure/mcp-darwin-x64@latest # macOS x64
+   npm install @azure/mcp-win32-x64@latest  # Windows x64
+   ```
+
+4. **Check your internet connection and try again**
+
+5. **Verify Node.js and npm versions:**
+   ```bash
+   node --version  # Should be 20.0.0 or later
+   npm --version
+   ```
+
+#### Common Causes of Auto-Installation Failure:
+- **Network connectivity issues** during package installation
+- **Permission problems** preventing npm from installing packages
+- **Corporate firewall/proxy** blocking npm registry access
+- **Disk space issues** preventing package extraction
+- **npm cache corruption** preventing proper package resolution
+
+#### For Enterprise Users:
+If you're behind a corporate firewall, you may need to:
+- Configure npm proxy settings
+- Whitelist npm registry domains (`*.npmjs.org`, `registry.npmjs.org`)
+- Work with IT to ensure npm can download packages
+
 ## Logging and Diagnostics
 
 ### Logging
@@ -502,4 +627,23 @@ To export telemetry to Azure Monitor, set the `APPLICATIONINSIGHTS_CONNECTION_ST
 #### Bring your own language model key
 
 [Bring your own language model key](https://code.visualstudio.com/docs/copilot/language-models#_bring-your-own-language-model-key)
-If you already have an API key for a language model provider, you can use their models in chat in VS Code, in addition to the built-in models that Copilot provides. You can use models from the following providers: Anthropic, Azure, Google Gemini, Groq, Ollama, OpenAI, and OpenRouter.
+An existing API key from a language model provider can be used to access that provider’s models in VS Code chat, in addition to the built-in models available through Copilot. Supported providers include Anthropic, Azure, Google Gemini, Groq, Ollama, OpenAI, and OpenRouter.
+
+
+### Locating MCP Server Binaries in VS Code
+
+The Azure MCP Server extension installs its platform-specific binaries in the user profile directory under:
+
+```
+<User-Profile-Dir>/.vscode/extensions/ms-azuretools.vscode-azure-mcp-server-<version>-<platform>/server
+```
+
+**Examples:**
+- **Windows:** `C:\Users\<YourUserName>\.vscode\extensions\ms-azuretools.vscode-azure-mcp-server-1.0.0-win32-x64`
+- **macOS:** `/Users/<YourUserName>/.vscode/extensions/ms-azuretools.vscode-azure-mcp-server-1.0.0-darwin-x64`
+- **Linux:** `/home/<YourUserName>/.vscode/extensions/ms-azuretools.vscode-azure-mcp-server-1.0.0-linux-x64`
+
+This can be useful for:
+- Verifying the exact version installed
+- Checking platform-specific binaries
+- Troubleshooting and replacing binaries in development builds

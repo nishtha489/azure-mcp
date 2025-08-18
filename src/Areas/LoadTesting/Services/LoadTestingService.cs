@@ -35,7 +35,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
 
             if (response == null)
             {
-                throw new Exception($"Failed to retrieve Azure Load Testing resources: {response}");
+                throw new Exception($"Failed to retrieve Azure Load Testing resources.");
             }
             return new List<TestResource>
             {
@@ -56,7 +56,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
 
             if (response == null || response.Count == 0)
             {
-                throw new Exception($"Failed to retrieve Azure Load Testing resources: {response}");
+                throw new Exception($"Failed to retrieve Azure Load Testing resources.");
             }
             var loadTestResources = new List<TestResource>();
             foreach (var resource in response)
@@ -91,7 +91,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var response = await rgResource.GetLoadTestingResources().CreateOrUpdateAsync(WaitUntil.Completed, testResourceName, new LoadTestingResourceData(location));
         if (response == null || response.Value == null)
         {
-            throw new Exception($"Failed to create or update Azure Load Testing resource: {response}");
+            throw new Exception($"Failed to create or update Azure Load Testing resource.");
         }
 
         return new TestResource
@@ -126,7 +126,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var loadTestRunResponse = await loadTestClient.GetTestRunAsync(testRunId);
         if (loadTestRunResponse == null || loadTestRunResponse.IsError)
         {
-            throw new Exception($"Failed to retrieve Azure Load Test Run: {loadTestRunResponse}");
+            throw new Exception($"Failed to retrieve Azure Load Test Run.");
         }
 
         var loadTestRun = loadTestRunResponse.Content;
@@ -154,7 +154,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var loadTestRunResponse = loadTestClient.GetTestRunsAsync(testId: testId);
         if (loadTestRunResponse == null)
         {
-            throw new Exception($"Failed to retrieve Azure Load Test Run: {loadTestRunResponse}");
+            throw new Exception($"Failed to retrieve Azure Load Test Run.");
         }
 
         var testRuns = new List<TestRun>();
@@ -205,7 +205,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var loadTestRunResponse = await loadTestClient.BeginTestRunAsync(0, testRunId, RequestContent.Create(JsonSerializer.Serialize(requestBody, LoadTestJsonContext.Default.TestRunRequest)), oldTestRunId: oldTestRunId);
         if (loadTestRunResponse == null)
         {
-            throw new Exception($"Failed to retrieve Azure Load Test Run: {loadTestRunResponse}");
+            throw new Exception($"Failed to retrieve Azure Load Test Run.");
         }
 
         var loadTestRun = loadTestRunResponse.WaitForCompletionAsync().Result.Value.ToString();
@@ -233,7 +233,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var loadTestResponse = await loadTestClient.GetTestAsync(testId);
         if (loadTestResponse == null || loadTestResponse.IsError)
         {
-            throw new Exception($"Failed to retrieve Azure Load Test: {loadTestResponse}");
+            throw new Exception($"Failed to retrieve Azure Load Test.");
         }
 
         var loadTest = loadTestResponse.Content.ToString();
@@ -281,7 +281,7 @@ public class LoadTestingService(ISubscriptionService subscriptionService) : Base
         var loadTestResponse = await loadTestClient.CreateOrUpdateTestAsync(testId, RequestContent.Create(JsonSerializer.Serialize(testRequestPayload, LoadTestJsonContext.Default.TestRequestPayload)));
         if (loadTestResponse == null || loadTestResponse.IsError)
         {
-            throw new Exception($"Failed to create Azure Load Test: {loadTestResponse}");
+            throw new Exception($"Failed to create Azure Load Test");
         }
 
         var loadTest = loadTestResponse.Content.ToString();

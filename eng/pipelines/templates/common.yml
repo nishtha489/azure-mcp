@@ -1,7 +1,4 @@
 parameters:
-- name: SkipSigning
-  type: boolean
-  default: true
 - name: PublishPackages
   type: boolean
   default: false
@@ -11,13 +8,22 @@ parameters:
 - name: RunLiveTests
   type: boolean
   default: false
+- name: VsixTargets
+  type: object
+  default:
+    - linux-x64
+    - linux-arm64
+    - osx-x64
+    - osx-arm64
+    - win-x64
+    - win-arm64
 
 resources:
   repositories:
   - repository: azure-sdk-build-tools
     type: git
     name: internal/azure-sdk-build-tools
-    ref: refs/tags/azure-sdk-build-tools_20250307.1
+    ref: refs/tags/azure-sdk-build-tools_20250807.1
 
 extends:
   template: /eng/pipelines/templates/1es-redirect.yml
@@ -36,6 +42,7 @@ extends:
       - template: /eng/pipelines/templates/jobs/initialize.yml
         parameters:
           ReleaseRun: ${{ parameters.ReleaseRun }}
+
     - stage: Build
       dependsOn:
       - Initialize
@@ -74,52 +81,70 @@ extends:
         variables:
         - template: /eng/pipelines/templates/variables/image.yml
         - template: /eng/pipelines/templates/variables/globals.yml
-        - name: TestAreas
-          value: $[ stageDependencies.Initialize.Initialize.outputs['GetTestAreas.TestAreas'] ]
-        condition: and(succeeded(), eq(dependencies.Initialize.outputs['Initialize.GetTestAreas.HasTestAreas'], 'True'))
         jobs:
-        - template: /eng/common/pipelines/templates/jobs/generate-job-matrix.yml
-          parameters:
-            SparseCheckout: false
-            MatrixConfigs:
-            - Name: test_matrix
-              Path: eng/pipelines/test-matrix.json
-              Selection: all
-              GenerateVMJobs: true
-            JobTemplatePath: /eng/pipelines/templates/jobs/live-test.yml
-            AdditionalParameters:
-              TimeoutInMinutes: 90
-              EnvVars:
-                AZURE_POD_IDENTITY_AUTHORITY_HOST: "FakeAuthorityHost"
-            CloudConfig:
-              Cloud: Public
-              ServiceConnection: azure-sdk-tests-public
-
-    # # All builds in the internal project get signing
-    - stage: SignAndPack
-      ${{ if parameters.SkipSigning }}:
-        displayName: 'Pack'
-      ${{ else }}:
-        displayName: 'Sign and Pack'
-      dependsOn:
-      - Initialize
-      - Build
-      variables:
-      - template: /eng/pipelines/templates/variables/image.yml
-      - template: /eng/pipelines/templates/variables/globals.yml
-      - name: Version
-        value: $[ stageDependencies.Initialize.Initialize.outputs['Version.Version'] ]
-      jobs:
-      - template: /eng/pipelines/templates/jobs/sign-and-pack.yml
-        parameters:
-          SkipSigning: ${{ parameters.SkipSigning }}
+        - template: /eng/pipelines/templates/jobs/live-test.yml
 
     - ${{ if eq(parameters.PublishPackages, 'true') }}:
+      - stage: Sign
+        displayName: 'Sign'
+        dependsOn:
+        - Initialize
+        - Build
+        pool:
+          name: $(LINUXPOOL)
+          image: $(LINUXVMIMAGE)
+          os: linux
+        variables:
+        - template: /eng/pipelines/templates/variables/image.yml
+        - template: /eng/pipelines/templates/variables/globals.yml
+        - name: Version
+          value: $[ stageDependencies.Initialize.Initialize.outputs['Version.Version'] ]
+        jobs:
+        - template: /eng/pipelines/templates/jobs/sign-and-pack.yml
+        - ${{ each vsixtarget in parameters.VsixTargets }}:
+          - template: /eng/pipelines/templates/jobs/sign-and-pack-vsix.yml
+            parameters:
+              DependsOn: SignAndPack
+              VsixTarget: ${{ vsixtarget }}
+        - job: Verify_Signing
+          displayName: "Verify Signing"
+          dependsOn: SignAndPack
+          pool:
+            name: $(WINDOWSPOOL) # Signing verification must happen on windows
+            image: $(WINDOWSVMIMAGE)
+            os: windows
+          variables:
+          - template: /eng/pipelines/templates/variables/image.yml
+          - template: /eng/pipelines/templates/variables/globals.yml
+          steps:
+          - checkout: none
+          - download: current
+            artifact: $(PipelineArtifactName)_signed
+            displayName: "Download signed MCP server binaries"
+          - pwsh: |
+              Write-Host "Verifying binary signing for win-x64 and win-arm64 binaries..."
+              $allSigned = $true
+              $signedBinaries = Get-ChildItem -Path '$(Pipeline.Workspace)/$(PipelineArtifactName)_signed/win-*' -Recurse -Include @("*.dll", "*.exe")
+              foreach ($binary in $signedBinaries) {
+                  if ((Get-AuthenticodeSignature -FilePath $binary.FullName).Status -ne 'Valid') {
+                      Write-Host "Binary $($binary.FullName) is NOT signed correctly."
+                      $allSigned = $false
+                  }
+                  else {
+                      Write-Host "Binary $($binary.FullName) is signed correctly."
+                  }
+              }
+              if (-not $allSigned) {
+                  Write-Error "One or more binaries are not signed correctly."
+                  exit 1
+              }
+            displayName: "Verify Binary Signing"
+
       - ${{ if eq(parameters.ReleaseRun, 'true') }}:
         - stage: Release
           dependsOn:
           - Initialize
-          - SignAndPack
+          - Sign
           pool:
             name: $(LINUXPOOL)
             image: $(LINUXVMIMAGE)
@@ -131,12 +156,18 @@ extends:
             value: $[ stageDependencies.Initialize.Initialize.outputs['Version.Version'] ]
           jobs:
           - template: /eng/pipelines/templates/jobs/release.yml
+            parameters:
+              VsixTargets: ${{ parameters.VsixTargets }}
+          - template: /eng/pipelines/templates/jobs/docker.yml
+            parameters:
+              ContainerRegistry: 'azuresdkimages'
+              DeploymentEnvironment: 'public'
 
       - ${{ else }}:
         - stage: Integration
           dependsOn:
           - Initialize
-          - SignAndPack
+          - Sign
           pool:
             name: $(LINUXPOOL)
             image: $(LINUXVMIMAGE)

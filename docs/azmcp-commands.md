@@ -496,6 +496,12 @@ azmcp loadtesting testrun update --subscription <subscription> \
                                  --description <description>
 ```
 
+# Gets a secret in vault
+azmcp keyvault secret get --subscription <subscription> \
+                          --vault <vault-name> \
+                          --name <secret-name>
+```
+
 ### Azure Load Testing Operations
 ```bash
 # Execute load test command to get all the commands details
@@ -525,6 +531,13 @@ azmcp loadtesting testrun create --subscription <subscription> --resource-group 
 
 # Update load test run
 azmcp loadtesting testrun update --subscription <subscription> --resource-group <resource-group> --test-resource-name <test-resource-name> --test-id <test-id> --testrun-id <testrun-id> --display-name <display-name> --description <description>
+```
+
+### Azure Kubernetes Service (AKS) Operations
+
+```bash
+# List AKS clusters in a subscription
+azmcp aks cluster list --subscription <subscription>
 ```
 
 ### Azure Managed Grafana Operations

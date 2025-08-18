@@ -5,6 +5,7 @@ The Azure MCP Server updates automatically by default whenever a new release com
 ## 0.5.7 (Unreleased)
 
 ### Features Added
+- Support for Azure Load testing operations - Modify load testing resource, test and test runs. [#315](https://github.com/Azure/azure-mcp/pull/315)
 
 ### Breaking Changes
 
